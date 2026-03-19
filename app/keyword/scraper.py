@@ -17,151 +17,214 @@ CAFE_HOSTS = {"cafe.naver.com", "m.cafe.naver.com"}
 
 def extract_cafe_ids(url: str):
     """카페 URL에서 ID 추출"""
-    try: 
+    try:
         p = urllib.parse.urlparse(url)
-    except Exception: 
+    except Exception:
         return set()
     ids = set()
     qs = urllib.parse.parse_qs(p.query)
     for key in ("articleid", "clubid", "articleId", "clubId"):
         for val in qs.get(key, []):
-            if val.isdigit(): 
+            if val.isdigit():
                 ids.add(val)
     for token in re.split(r"[/?=&]", p.path):
-        if token.isdigit() and len(token) >= 4: 
+        if token.isdigit() and len(token) >= 4:
             ids.add(token)
     return ids
 
 def url_matches(target_url: str, candidate_url: str) -> bool:
     """두 URL이 같은 게시물인지 확인"""
-    try: 
+    try:
         t, c = urllib.parse.urlparse(target_url), urllib.parse.urlparse(candidate_url)
-    except Exception: 
+    except Exception:
         return False
     t_host, c_host = t.netloc.split(":")[0].lower(), c.netloc.split(":")[0].lower()
     if (t_host in CAFE_HOSTS) or (c_host in CAFE_HOSTS):
         t_ids, c_ids = extract_cafe_ids(target_url), extract_cafe_ids(candidate_url)
-        if t_ids and c_ids and (t_ids & c_ids): 
+        if t_ids and c_ids and (t_ids & c_ids):
             return True
-        if t_ids and any(_id in candidate_url for _id in t_ids): 
+        if t_ids and any(_id in candidate_url for _id in t_ids):
             return True
     return candidate_url.startswith(target_url[: min(len(target_url), 60)])
 
-def url_or_title_matches(target_url, target_title, candidate_link):
+def url_or_title_matches(target_url, target_title, href, link_text):
     """URL 또는 제목으로 매칭"""
-    href = candidate_link.get_attribute("href") or ""
-    link_text = candidate_link.text.strip()
-    
     # URL 매칭
     if url_matches(target_url, href):
         return True
-    
+
     # 제목 매칭 (공백 등 정규화 후 비교)
     if target_title and link_text:
         normalized_target = "".join(target_title.split()).lower()
         normalized_link = "".join(link_text.split()).lower()
-        if normalized_target in normalized_link or normalized_link in normalized_target:
-            return True
-    
+        if len(normalized_target) > 3 and len(normalized_link) > 3:
+            if normalized_target in normalized_link or normalized_link in normalized_target:
+                return True
+
     return False
 
 def human_sleep(a=0.8, b=1.8):
     """사람처럼 랜덤 대기"""
     time.sleep(random.uniform(a, b))
 
-def is_valid_content_link(href):
-    """'일반 인기글' 로직을 위한 유효한 콘텐츠 링크인지 확인"""
+def is_content_url(href):
+    """실제 게시물 URL인지 확인 (블로그 홈, 네비게이션 등 제외)"""
     if not href:
         return False
-    
+
     exclude_patterns = [
-        'javascript:', '#', '/search.naver', 'tab=', 'mode=', 'option=', 
-        'query=', 'where=', 'sm=', 'ssc=', '/my.naver', 'help.naver', 
-        'shopping.naver', 'terms.naver.com', 'nid.naver.com'
+        'javascript:', '#', '/search.naver', 'tab=', 'mode=', 'option=',
+        'query=', 'where=', 'sm=', 'ssc=', '/my.naver', 'help.naver',
+        'shopping.naver', 'terms.naver.com', 'nid.naver.com', 'ader.naver.com',
+        'mkt.naver.com', 'section.blog.naver.com', 'section.cafe.naver.com',
+        'MyBlog.naver'
     ]
-    href_lower = href.lower()
-    if any(pattern in href_lower for pattern in exclude_patterns):
+    if any(p in href for p in exclude_patterns):
         return False
-    
-    include_patterns = [
-        'blog.naver.com', 'cafe.naver.com', 'post.naver.com', 'kin.naver.com',
-        'smartplace.naver', 'tv.naver.com', 'news.naver.com'
-    ]
-    if any(pattern in href for pattern in include_patterns):
+
+    # 블로그 게시물: blog.naver.com/아이디/숫자
+    if 'blog.naver.com' in href:
+        return bool(re.search(r'blog\.naver\.com/[^/]+/\d+', href))
+
+    # 카페 게시물: cafe.naver.com 에 articleid 또는 숫자 경로 포함
+    if 'cafe.naver.com' in href:
+        return bool(re.search(r'(articleid|clubid|\d{6,})', href, re.I))
+
+    # 인플루언서: in.naver.com/아이디/contents
+    if 'in.naver.com' in href and '/contents/' in href:
         return True
-    
+
+    # 기타 네이버 콘텐츠
+    if any(p in href for p in ['post.naver.com', 'kin.naver.com', 'tv.naver.com', 'news.naver.com']):
+        return True
+
     return False
 
-# --- 메인 실행 함수 ---
-def run_check(keyword: str, post_url: str, post_title: str = None) -> tuple:
-    """키워드마다 다른 구조를 동적으로 파악하여 순위 측정"""
-    print(f"--- '{keyword}' 순위 확인 시작 ---")
-    
+def create_driver():
+    """Chrome WebDriver 생성"""
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--window-size=1280,2200")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
-    
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+def extract_section_title(section):
+    """섹션 제목 추출 - 2026 네이버 구조 대응"""
+    try:
+        # 1. h2 태그에서 제목 추출 (가장 일반적)
+        for sel in ["h2", "h3", ".fds-comps-header-headline", "[class*='headline']"]:
+            els = section.find_elements(By.CSS_SELECTOR, sel)
+            for el in els:
+                text = el.text.strip()
+                if text and len(text) > 1 and len(text) < 50:
+                    # "더보기", "관련 광고" 등 제거
+                    text = text.split("\n")[0].strip()
+                    if "더보기" in text:
+                        text = text.split("더보기")[0].strip()
+                    if text:
+                        return text
+
+        # 2. 섹션 텍스트에서 "인기글" 패턴
+        section_text = section.text[:300] if section.text else ""
+        if "인기글" in section_text:
+            match = re.search(r'([\w·\s]+)?인기글', section_text)
+            if match:
+                title = match.group(0).strip()
+                if len(title) < 30:
+                    return title
+            return "인기글"
+
+        # 3. 클래스명 기반 추론
+        class_name = section.get_attribute("class") or ""
+        if "ad_section" in class_name or "ad" in class_name.split():
+            return "광고"
+        if "sp_nblog" in class_name:
+            return "블로그"
+        if "sp_ncafe" in class_name:
+            return "카페"
+        if "ntalk_wrap" in class_name:
+            return "오픈톡"
+
+    except Exception:
+        pass
+    return "검색결과"
+
+def extract_post_links(section):
+    """섹션 내 게시물 링크 추출 - href 기반 (클래스명 해시화 대응)"""
+    results = []  # [(href, text), ...]
+    seen_hrefs = set()
+
+    try:
+        # blog, cafe, in.naver 등 콘텐츠 URL을 가진 모든 링크 수집
+        all_links = section.find_elements(By.CSS_SELECTOR,
+            "a[href*='blog.naver.com'], "
+            "a[href*='cafe.naver.com'], "
+            "a[href*='in.naver.com/'], "
+            "a[href*='post.naver.com'], "
+            "a[href*='kin.naver.com']"
+        )
+
+        for link in all_links:
+            try:
+                if not link.is_displayed():
+                    continue
+                href = link.get_attribute("href") or ""
+                text = link.text.strip()
+
+                # 실제 게시물 URL만 필터
+                if not is_content_url(href):
+                    continue
+
+                # 중복 제거
+                if href in seen_hrefs:
+                    continue
+
+                # 텍스트가 있는 링크만 (제목 역할)
+                if len(text) > 5:
+                    seen_hrefs.add(href)
+                    results.append((href, text))
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"링크 추출 오류: {e}")
+
+    return results
+
+# --- 메인 실행 함수 ---
+def run_check(keyword: str, post_url: str, post_title: str = None) -> tuple:
+    """키워드 순위 확인 - 2026 네이버 통합검색 대응"""
+    print(f"--- '{keyword}' 순위 확인 시작 ---")
+
     driver = None
     try:
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver = create_driver()
         q = urllib.parse.quote(keyword)
-        
+
+        # === 1단계: 통합검색(기본) 페이지에서 확인 ===
         print(f"[{keyword}] 통합검색 페이지 접근 중...")
         driver.get(f"https://search.naver.com/search.naver?query={q}")
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "main_pack")))
         human_sleep()
-        
+
+        # 페이지 끝까지 스크롤 (lazy-load 콘텐츠 로딩)
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(1.5)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(1)
 
-        all_sections = driver.find_elements(By.CSS_SELECTOR, ".sc_new, .view_wrap")
-        print(f"[{keyword}] {len(all_sections)}개 섹션 발견")
-        
-        for section in all_sections:
-            try:
-                if not section.is_displayed() or section.size['height'] < 50:
-                    continue
-                
-                section_title = extract_section_title(section, keyword)
-                if "쇼핑" in section_title or "광고" in section_title:
-                    continue
+        # 통합검색에서 섹션별 확인
+        result = check_sections(driver, keyword, post_url, post_title)
+        if result:
+            return result
 
-                print(f"[{keyword}] 섹션: '{section_title}' 확인 중...")
-                
-                content_links = extract_content_links(section)
-                if not content_links:
-                    print(f"[{keyword}] '{section_title}'에서 콘텐츠 링크를 찾지 못함")
-                    continue
-                
-                print(f"[{keyword}] '{section_title}'에서 {len(content_links)}개 콘텐츠 링크 발견")
-                
-                # 중복 제거
-                unique_links = []
-                seen_hrefs = set()
-                for link in content_links:
-                    href = link.get_attribute('href')
-                    if href not in seen_hrefs:
-                        seen_hrefs.add(href)
-                        unique_links.append(link)
-
-                # 이 섹션 내에서만 순위 카운트
-                for rank, link in enumerate(unique_links, 1):
-                    if url_or_title_matches(post_url, post_title, link):
-                        print(f"✅ [{keyword}] '{section_title}' 섹션 내 {rank}위에서 발견!")
-                        return (section_title, rank, section_title)  # 섹션 내 순위만 반환
-            
-            except Exception:
-                continue
-        
-        print(f"❌ [{keyword}] 통합검색 결과에서 URL을 찾지 못함")
+        print(f"[{keyword}] 통합검색 1페이지에서 URL을 찾지 못함")
         return ("노출X", 999, None)
 
     except Exception as e:
-        print(f"🚨 [{keyword}] 순위 확인 중 심각한 오류 발생: {str(e)}")
+        print(f"[{keyword}] 순위 확인 중 오류 발생: {str(e)}")
         traceback.print_exc()
         return ("확인 실패", 999, None)
     finally:
@@ -169,134 +232,121 @@ def run_check(keyword: str, post_url: str, post_title: str = None) -> tuple:
             driver.quit()
         print(f"--- '{keyword}' 순위 확인 완료 ---\n")
 
-def extract_section_title(section, keyword):
-    """(개선) XPath와 텍스트 분석을 통해 더욱 정교하게 섹션 제목 추출"""
-    try:
-        # 1. (기존 로직) 스마트블록/신규 섹션의 명시적 헤드라인 우선 탐색
-        # 섹션 내부에 h2, h3, a 태그 중에 title 클래스를 가진게 있는지 확인
-        title_element = section.find_element(By.CSS_SELECTOR, "h2.title, h3.title, a.title, [class*='headline']")
-        if title_element and title_element.text and len(title_element.text.strip()) > 1:
-            title_text = title_element.text.strip()
-            # "더보기" 같은 불필요한 텍스트 제거
-            if "더보기" in title_text:
-                title_text = title_text.split("더보기")[0].strip()
-            return title_text
-
-        # 2. (✨신규 로직✨) XPath를 사용해 섹션 바로 '이전' 요소에서 제목 탐색
-        # "건강·의학 인기글" 같은 제목은 섹션 밖에 위치하는 경우가 많습니다.
+def is_smartblock(section):
+    """스마트블록 섹션인지 판별 (여러 게시물을 주제별로 묶은 블록)"""
+    raw_links = section.find_elements(By.CSS_SELECTOR,
+        "a[href*='blog.naver.com'], "
+        "a[href*='cafe.naver.com'], "
+        "a[href*='in.naver.com/'], "
+        "a[href*='kin.naver.com']"
+    )
+    # 스마트블록 판별: 서로 다른 출처(블로그/카페/인플루언서)의 게시물이 섞여 있거나
+    # 같은 출처라도 서로 다른 작성자의 게시물이 여러 개 모여있는 섹션
+    if len(raw_links) < 10:
+        return False
+    # 고유 게시물 ID 추출 (같은 카페글의 댓글 링크는 동일 게시물로 취급)
+    unique_posts = set()
+    for link in raw_links:
         try:
-            # 바로 직전의 형제 요소(div, h2 등)를 찾습니다.
-            prev_sibling = section.find_element(By.XPATH, "./preceding-sibling::*[1]")
-            prev_text = prev_sibling.text.strip()
-            if "인기글" in prev_text and len(prev_text) < 50:
-                 return prev_text
+            href = link.get_attribute("href") or ""
+            if not is_content_url(href):
+                continue
+            # 블로그: blog.naver.com/아이디/포스트번호
+            m = re.search(r'blog\.naver\.com/([^/]+/\d+)', href)
+            if m:
+                unique_posts.add(f"blog:{m.group(1)}")
+                continue
+            # 카페: cafe.naver.com/카페이름/게시물번호 또는 articleid 파라미터
+            m = re.search(r'cafe\.naver\.com/([^/?]+)/(\d+)', href)
+            if m:
+                unique_posts.add(f"cafe:{m.group(1)}/{m.group(2)}")
+                continue
+            m = re.search(r'cafe\.naver\.com/.*[?&]articleid=(\d+)', href, re.I)
+            if m:
+                unique_posts.add(f"cafe:article/{m.group(1)}")
+                continue
+            # 인플루언서: in.naver.com/아이디/contents/internal/번호
+            m = re.search(r'in\.naver\.com/([^/]+)/contents/internal/(\d+)', href)
+            if m:
+                unique_posts.add(f"in:{m.group(1)}/{m.group(2)}")
+                continue
+            # 지식iN: docId로 구분
+            m = re.search(r'docId=(\d+)', href)
+            if m:
+                unique_posts.add(f"kin:{m.group(1)}")
+                continue
+            # 기타: URL 자체를 키로 사용
+            unique_posts.add(href)
         except Exception:
-            pass # 이전 요소가 없으면 그냥 넘어갑니다.
+            continue
+    if len(unique_posts) >= 3:
+        return True
+    # 고유 게시물 2개 + raw 링크 20개 이상이면 스마트블록
+    # (각 게시물이 썸네일/제목/본문 등 여러 링크로 표현됨)
+    if len(unique_posts) >= 2 and len(raw_links) >= 20:
+        return True
+    return False
 
-        # 3. (기존 로직 개선) 섹션 내부 텍스트에서 '인기글' 패턴 찾기
-        section_text = section.text[:200]
-        if "인기글" in section_text:
-            match = re.search(r'([\w·\s]+)?인기글', section_text)
-            if match:
-                title = match.group(0).strip()
-                if len(title) < 30: return title
-            return "인기글"
+def check_sections(driver, keyword, post_url, post_title):
+    """통합검색 페이지에서 스마트블록은 섹션별 순위, 일반블록은 통합 순위로 확인"""
+    sections = driver.find_elements(By.CSS_SELECTOR, ".sc_new")
+    print(f"[{keyword}] {len(sections)}개 섹션 발견")
 
-        # 4. (기존 로직) 클래스명 기반으로 섹션 종류 추론
-        class_name = section.get_attribute("class") or ""
-        if "ad" in class_name or "power_link" in class_name: return "광고"
-        if "blog" in class_name: return "블로그"
-        if "cafe" in class_name: return "카페"
+    skip_keywords = ["쇼핑", "광고", "오픈톡", "숏텐츠", "클립", "브랜드", "플레이스",
+                     "네이버 가격비교", "네이버플러스", "함께 많이 찾는"]
 
-    except Exception:
-        pass
-    return "검색결과" # 최후의 보루
+    # 스마트블록 섹션과 일반 블록을 분리 수집
+    smartblock_sections = []  # [(section_title, [(href, text), ...]), ...]
+    regular_posts = []        # [(href, text), ...]
+    seen_hrefs = set()
 
+    for section in sections:
+        try:
+            if not section.is_displayed() or section.size['height'] < 50:
+                continue
 
-def extract_content_links(section):
-    """실제 보이는 게시물 링크만 정확히 추출"""
-    content_links = []
-    
-    try:
-        # 0. 스마트블록 우선 확인 (추가)
-        post_text_containers = section.find_elements(By.CSS_SELECTOR, "div[class*='text-container']")
-        if post_text_containers:
-            for container in post_text_containers:
-                try:
-                    title_link = container.find_element(By.CSS_SELECTOR, "a[class*='text-title']")
-                    content_links.append(title_link)
-                except:
-                    continue
-            # 실제로 링크를 찾았을 때만 return
-            if content_links:
-                return content_links
-        
-        # 1. 일반 인기글 처리 (원본 그대로)
-        # 디버깅: 섹션 텍스트 확인
-        section_text = section.text[:200] if section.text else ""
-        if "인기글" in section_text:
-            print(f"  [디버깅] 인기글 섹션 발견, 텍스트: {section_text[:100]}...")
-        
-        # 리스트 아이템 방식
-        list_items = section.find_elements(By.CSS_SELECTOR, "li")
-        
-        # 리스트 아이템이 없으면 모든 링크 시도
-        if not list_items:
-            print(f"  [디버깅] li 요소 없음, 모든 a 태그 검색")
-            all_links = section.find_elements(By.TAG_NAME, "a")
-            for link in all_links:
-                href = link.get_attribute("href") or ""
-                text = link.text.strip()
-                if ("blog.naver" in href or "cafe.naver" in href) and len(text) > 5:
-                    print(f"    -> 링크 발견: {text[:30]}...")
-                    content_links.append(link)
+            section_title = extract_section_title(section)
+            if any(sk in section_title for sk in skip_keywords):
+                continue
 
-        # 2. 리스트 구조가 아닌 경우
-        if not content_links:
-            link_selectors = [
-                "a.title_link",
-                "a.api_txt_lines",
-                "a.link_tit",
-                "a.total_tit",
-                "a.name",
-                "a.dsc_link",
-                "a[href*='blog.naver']",
-                "a[href*='cafe.naver']",
-            ]
-            
-            for selector in link_selectors:
-                links = section.find_elements(By.CSS_SELECTOR, selector)
-                for link in links:
-                    if link.is_displayed() and link not in content_links:
-                        href = link.get_attribute("href") or ""
-                        text = link.text.strip()
-                        
-                        if is_valid_content_link(href) and len(text) > 5:
-                            content_links.append(link)
-        
-        # 3. 그래도 없으면 모든 링크 확인 (최후 수단)
-        if not content_links:
-            all_links = section.find_elements(By.TAG_NAME, 'a')
-            
-            for link in all_links:
-                if not link.is_displayed():
-                    continue
-                
-                # 너무 작은 링크 제외
-                if link.size['height'] < 10 or link.size['width'] < 10:
-                    continue
-                
-                href = link.get_attribute("href") or ""
-                text = link.text.strip()
-                
-                # 유효한 콘텐츠 링크이고 충분한 텍스트
-                if is_valid_content_link(href) and len(text) > 5:
-                    # UI 요소 제외
-                    if not any(skip in text for skip in ["더보기", "설정", "옵션", "필터", "전체"]):
-                        if link not in content_links:
-                            content_links.append(link)
-        
-    except Exception as e:
-        print(f"링크 추출 오류: {e}")
-    
-    return content_links
+            post_links = extract_post_links(section)
+            if not post_links:
+                continue
+
+            if is_smartblock(section):
+                # 스마트블록: 섹션별로 게시물 모음
+                section_posts = []
+                for href, text in post_links:
+                    if href not in seen_hrefs:
+                        seen_hrefs.add(href)
+                        section_posts.append((href, text))
+                if section_posts:
+                    smartblock_sections.append((section_title, section_posts))
+                    print(f"[{keyword}] 스마트블록 '{section_title}': {len(section_posts)}개 게시물")
+            else:
+                # 일반 블록: 통합 순위용으로 모음
+                for href, text in post_links:
+                    if href not in seen_hrefs:
+                        seen_hrefs.add(href)
+                        regular_posts.append((href, text))
+
+        except Exception:
+            continue
+
+    # 1) 스마트블록에서 섹션별 순위 확인
+    for section_title, posts in smartblock_sections:
+        for rank, (href, text) in enumerate(posts, 1):
+            if url_or_title_matches(post_url, post_title, href, text):
+                print(f"[{keyword}] 스마트블록 '{section_title}' {rank}위에서 발견!")
+                return (section_title, rank, section_title)
+
+    # 2) 일반 블록 통합 순위 확인
+    if regular_posts:
+        print(f"[{keyword}] 통합검색 일반 게시물: {len(regular_posts)}개")
+        for rank, (href, text) in enumerate(regular_posts, 1):
+            if url_or_title_matches(post_url, post_title, href, text):
+                print(f"[{keyword}] 통합검색 {rank}위에서 발견!")
+                return ("통합검색", rank, "통합검색")
+
+    return None
+

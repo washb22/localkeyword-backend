@@ -14,7 +14,7 @@ def create_app(config_class=Config):
 
    # CORS 설정 수정 - Vercel 도메인 추가
    CORS(app, origins=[
-       "http://localhost:5173",
+       "http://localhost:*",
        "https://keyword-frontend.vercel.app",
        "https://keyword-frontend-*.vercel.app"
    ])
