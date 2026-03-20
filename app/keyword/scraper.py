@@ -255,8 +255,8 @@ def check_sections(driver, keyword, post_url, post_title):
     divider_y = get_divider_y(driver)
     print(f"[{keyword}] 윗탭/아랫탭 경계 Y: {divider_y}")
 
-    # 순위 카운트에서 제외할 섹션
-    skip_always = ["광고", "AI 브리핑"]
+    # 순위 카운트에서 제외할 섹션 (제목 기반)
+    skip_titles = ["광고", "AI 브리핑", "브랜드"]
 
     upper_rank = 0
     lower_rank = 0
@@ -266,8 +266,13 @@ def check_sections(driver, keyword, post_url, post_title):
             if not section.is_displayed() or section.size['height'] < 50:
                 continue
 
+            # ad_section 클래스 (키워드 헤더/광고 섹션) 스킵
+            section_class = section.get_attribute("class") or ""
+            if "ad_section" in section_class:
+                continue
+
             section_title = extract_section_title(section)
-            if any(sk in section_title for sk in skip_always):
+            if any(sk in section_title for sk in skip_titles):
                 continue
 
             section_y = section.location['y']
