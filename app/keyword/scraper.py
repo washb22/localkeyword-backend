@@ -255,9 +255,10 @@ def check_sections(driver, keyword, post_url, post_title):
     divider_y = get_divider_y(driver)
     print(f"[{keyword}] 윗탭/아랫탭 경계 Y: {divider_y}")
 
-    # 광고는 완전히 무시
-    skip_always = ["광고"]
+    # 순위 카운트에서 제외할 섹션
+    skip_always = ["광고", "AI 브리핑"]
 
+    upper_rank = 0
     lower_rank = 0
 
     for section in sections:
@@ -273,13 +274,14 @@ def check_sections(driver, keyword, post_url, post_title):
             is_upper = divider_y is not None and section_y < divider_y
 
             if is_upper:
-                # 윗탭: 링크가 있는 섹션에서만 매칭 확인, 섹션 내 순위 리포트
+                # 윗탭: 모든 보이는 섹션을 1개 카드=1순위로 카운트
+                upper_rank += 1
                 post_links = extract_post_links(section)
                 if post_links:
-                    for rank, (href, text) in enumerate(post_links, 1):
+                    for href, text in post_links:
                         if url_or_title_matches(post_url, post_title, href, text):
-                            print(f"[{keyword}] 윗탭 '{section_title}' {rank}위에서 발견!")
-                            return ("윗탭", rank, "윗탭")
+                            print(f"[{keyword}] 윗탭 {upper_rank}위에서 발견!")
+                            return ("윗탭", upper_rank, "윗탭")
             else:
                 # 아랫탭: 모든 보이는 섹션을 1개 카드=1순위로 카운트
                 lower_rank += 1
