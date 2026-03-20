@@ -109,7 +109,7 @@ def create_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    return webdriver.Chrome(options=options)
 
 def extract_section_title(section):
     """섹션 제목 추출 - 2026 네이버 구조 대응"""
@@ -232,73 +232,33 @@ def run_check(keyword: str, post_url: str, post_title: str = None) -> tuple:
             driver.quit()
         print(f"--- '{keyword}' 순위 확인 완료 ---\n")
 
-def is_smartblock(section):
-    """스마트블록 섹션인지 판별 (여러 게시물을 주제별로 묶은 블록)"""
-    raw_links = section.find_elements(By.CSS_SELECTOR,
-        "a[href*='blog.naver.com'], "
-        "a[href*='cafe.naver.com'], "
-        "a[href*='in.naver.com/'], "
-        "a[href*='kin.naver.com']"
-    )
-    # 스마트블록 판별: 서로 다른 출처(블로그/카페/인플루언서)의 게시물이 섞여 있거나
-    # 같은 출처라도 서로 다른 작성자의 게시물이 여러 개 모여있는 섹션
-    if len(raw_links) < 10:
-        return False
-    # 고유 게시물 ID 추출 (같은 카페글의 댓글 링크는 동일 게시물로 취급)
-    unique_posts = set()
-    for link in raw_links:
+def get_divider_y(driver):
+    """윗탭/아랫탭 경계선 Y좌표 반환 (_fsolid_body 우선, _fsolid_head 폴백)"""
+    for selector in ['.spw_fsolid._fsolid_body', '.spw_fsolid._fsolid_head']:
         try:
-            href = link.get_attribute("href") or ""
-            if not is_content_url(href):
-                continue
-            # 블로그: blog.naver.com/아이디/포스트번호
-            m = re.search(r'blog\.naver\.com/([^/]+/\d+)', href)
-            if m:
-                unique_posts.add(f"blog:{m.group(1)}")
-                continue
-            # 카페: cafe.naver.com/카페이름/게시물번호 또는 articleid 파라미터
-            m = re.search(r'cafe\.naver\.com/([^/?]+)/(\d+)', href)
-            if m:
-                unique_posts.add(f"cafe:{m.group(1)}/{m.group(2)}")
-                continue
-            m = re.search(r'cafe\.naver\.com/.*[?&]articleid=(\d+)', href, re.I)
-            if m:
-                unique_posts.add(f"cafe:article/{m.group(1)}")
-                continue
-            # 인플루언서: in.naver.com/아이디/contents/internal/번호
-            m = re.search(r'in\.naver\.com/([^/]+)/contents/internal/(\d+)', href)
-            if m:
-                unique_posts.add(f"in:{m.group(1)}/{m.group(2)}")
-                continue
-            # 지식iN: docId로 구분
-            m = re.search(r'docId=(\d+)', href)
-            if m:
-                unique_posts.add(f"kin:{m.group(1)}")
-                continue
-            # 기타: URL 자체를 키로 사용
-            unique_posts.add(href)
+            y = driver.execute_script(f'''
+                var el = document.querySelector('{selector}');
+                if(el) return el.getBoundingClientRect().top + window.scrollY;
+                return -1;
+            ''')
+            if y > 0:
+                return y
         except Exception:
             continue
-    if len(unique_posts) >= 3:
-        return True
-    # 고유 게시물 2개 + raw 링크 20개 이상이면 스마트블록
-    # (각 게시물이 썸네일/제목/본문 등 여러 링크로 표현됨)
-    if len(unique_posts) >= 2 and len(raw_links) >= 20:
-        return True
-    return False
+    return None
 
 def check_sections(driver, keyword, post_url, post_title):
-    """통합검색 페이지에서 스마트블록은 섹션별 순위, 일반블록은 통합 순위로 확인"""
-    sections = driver.find_elements(By.CSS_SELECTOR, ".sc_new")
+    """통합검색 페이지에서 윗탭/아랫탭 구분, 섹션(카드) 단위로 순위 확인"""
+    sections = driver.find_elements(By.CSS_SELECTOR, "#main_pack .sc_new")
     print(f"[{keyword}] {len(sections)}개 섹션 발견")
 
-    skip_keywords = ["쇼핑", "광고", "오픈톡", "숏텐츠", "클립", "브랜드", "플레이스",
-                     "네이버 가격비교", "네이버플러스", "함께 많이 찾는"]
+    divider_y = get_divider_y(driver)
+    print(f"[{keyword}] 윗탭/아랫탭 경계 Y: {divider_y}")
 
-    # 스마트블록 섹션과 일반 블록을 분리 수집
-    smartblock_sections = []  # [(section_title, [(href, text), ...]), ...]
-    regular_posts = []        # [(href, text), ...]
-    seen_hrefs = set()
+    # 광고는 완전히 무시
+    skip_always = ["광고"]
+
+    lower_rank = 0
 
     for section in sections:
         try:
@@ -306,47 +266,32 @@ def check_sections(driver, keyword, post_url, post_title):
                 continue
 
             section_title = extract_section_title(section)
-            if any(sk in section_title for sk in skip_keywords):
+            if any(sk in section_title for sk in skip_always):
                 continue
 
-            post_links = extract_post_links(section)
-            if not post_links:
-                continue
+            section_y = section.location['y']
+            is_upper = divider_y is not None and section_y < divider_y
 
-            if is_smartblock(section):
-                # 스마트블록: 섹션별로 게시물 모음
-                section_posts = []
-                for href, text in post_links:
-                    if href not in seen_hrefs:
-                        seen_hrefs.add(href)
-                        section_posts.append((href, text))
-                if section_posts:
-                    smartblock_sections.append((section_title, section_posts))
-                    print(f"[{keyword}] 스마트블록 '{section_title}': {len(section_posts)}개 게시물")
+            if is_upper:
+                # 윗탭: 링크가 있는 섹션에서만 매칭 확인, 섹션 내 순위 리포트
+                post_links = extract_post_links(section)
+                if post_links:
+                    for rank, (href, text) in enumerate(post_links, 1):
+                        if url_or_title_matches(post_url, post_title, href, text):
+                            print(f"[{keyword}] 윗탭 '{section_title}' {rank}위에서 발견!")
+                            return ("윗탭", rank, "윗탭")
             else:
-                # 일반 블록: 통합 순위용으로 모음
-                for href, text in post_links:
-                    if href not in seen_hrefs:
-                        seen_hrefs.add(href)
-                        regular_posts.append((href, text))
+                # 아랫탭: 모든 보이는 섹션을 1개 카드=1순위로 카운트
+                lower_rank += 1
+                post_links = extract_post_links(section)
+                if post_links:
+                    for href, text in post_links:
+                        if url_or_title_matches(post_url, post_title, href, text):
+                            print(f"[{keyword}] 아랫탭 {lower_rank}위에서 발견!")
+                            return ("아랫탭", lower_rank, "아랫탭")
 
         except Exception:
             continue
-
-    # 1) 스마트블록에서 섹션별 순위 확인
-    for section_title, posts in smartblock_sections:
-        for rank, (href, text) in enumerate(posts, 1):
-            if url_or_title_matches(post_url, post_title, href, text):
-                print(f"[{keyword}] 스마트블록 '{section_title}' {rank}위에서 발견!")
-                return (section_title, rank, section_title)
-
-    # 2) 일반 블록 통합 순위 확인
-    if regular_posts:
-        print(f"[{keyword}] 통합검색 일반 게시물: {len(regular_posts)}개")
-        for rank, (href, text) in enumerate(regular_posts, 1):
-            if url_or_title_matches(post_url, post_title, href, text):
-                print(f"[{keyword}] 통합검색 {rank}위에서 발견!")
-                return ("통합검색", rank, "통합검색")
 
     return None
 

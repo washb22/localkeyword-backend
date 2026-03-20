@@ -9,6 +9,30 @@ from app.utils import json_response
 import traceback
 import io
 import csv
+import requests as http_requests
+
+
+def resolve_short_url(url):
+    """naver.me 등 단축 URL을 실제 URL로 변환"""
+    if not url:
+        return url
+    try:
+        parsed = __import__('urllib.parse', fromlist=['urlparse']).urlparse(url)
+        short_hosts = {'naver.me', 'me2.do', 'bit.ly', 'han.gl'}
+        if parsed.netloc.lower() in short_hosts:
+            r = http_requests.head(url, allow_redirects=True, timeout=5)
+            resolved = r.url
+            # 쿼리 파라미터 중 art= 제거 (공유 추적 파라미터)
+            p = __import__('urllib.parse', fromlist=['urlparse']).urlparse(resolved)
+            qs = __import__('urllib.parse', fromlist=['parse_qs']).parse_qs(p.query)
+            qs.pop('art', None)
+            clean_query = __import__('urllib.parse', fromlist=['urlencode']).urlencode(qs, doseq=True)
+            resolved = p._replace(query=clean_query).geturl()
+            print(f"단축 URL 변환: {url} -> {resolved}")
+            return resolved
+    except Exception as e:
+        print(f"단축 URL 변환 실패: {e}")
+    return url
 
 keyword_bp = Blueprint('keyword', __name__)
 
@@ -22,7 +46,7 @@ def create_keyword(current_user):
     new_keyword = Keyword(
         user_id=current_user.id,
         keyword_text=data['keyword_text'],
-        post_url=data['post_url'],
+        post_url=resolve_short_url(data['post_url']),
         post_title=data.get('post_title'),
         priority=data.get('priority', '중')
     )
@@ -91,7 +115,7 @@ def upload_keywords(current_user):
             new_keyword = Keyword(
                 user_id=current_user.id,
                 keyword_text=keyword_text,
-                post_url=post_url,
+                post_url=resolve_short_url(post_url),
                 post_title=post_title if post_title else None,
                 priority=priority if priority in ('상', '중', '하') else '중'
             )
@@ -196,7 +220,8 @@ def update_keyword(current_user, keyword_id):
 
     keyword.keyword_text = data.get('keyword_text', keyword.keyword_text)
     keyword.post_title = data.get('post_title', keyword.post_title)
-    keyword.post_url = data.get('post_url', keyword.post_url)
+    new_url = data.get('post_url')
+    keyword.post_url = resolve_short_url(new_url) if new_url else keyword.post_url
     keyword.priority = data.get('priority', keyword.priority)
 
     db.session.commit()
