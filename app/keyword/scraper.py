@@ -256,7 +256,7 @@ def check_sections(driver, keyword, post_url, post_title):
     print(f"[{keyword}] 윗탭/아랫탭 경계 Y: {divider_y}")
 
     # 순위 카운트에서 제외할 섹션 (제목 기반)
-    skip_titles = ["광고", "AI 브리핑", "브랜드"]
+    skip_titles = ["광고", "AI 브리핑", "브랜드", "가격비교", "쇼핑", "스토어"]
 
     upper_rank = 0
     lower_rank = 0
