@@ -30,6 +30,10 @@ def create_app(config_class=Config):
    from .keyword.routes import keyword_bp
    app.register_blueprint(keyword_bp, url_prefix='/keyword')
 
+   # 알림 블루프린트 등록
+   from .notification.routes import notification_bp
+   app.register_blueprint(notification_bp, url_prefix='/notification')
+
    @app.route("/")
    def index():
        return "코드 변경 테스트 성공!"
