@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from app.models import db, Keyword, User
 from app.keyword.scraper import run_check
 from app.notification.telegram import send_telegram_message, format_ranking_report
+from app.spreadsheet.sync import sync_to_spreadsheet
 import time
 import random
 
@@ -60,6 +61,17 @@ def check_all_keywords_and_notify(app):
                     })
 
             db.session.commit()
+
+            # 스프레드시트 동기화
+            if results:
+                kw_data = [{
+                    'priority': kw.priority, 'keyword_text': kw.keyword_text,
+                    'post_title': kw.post_title, 'post_url': kw.post_url,
+                    'ranking_status': kw.ranking_status, 'ranking': kw.ranking,
+                    'section': kw.section, 'prev_ranking': kw.prev_ranking,
+                    'prev_section': kw.prev_section, 'prev_ranking_status': kw.prev_ranking_status
+                } for kw in keywords]
+                sync_to_spreadsheet(kw_data, user.email)
 
             # 텔레그램 발송
             if results:

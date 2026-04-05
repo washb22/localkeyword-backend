@@ -283,19 +283,21 @@ def check_sections(driver, keyword, post_url, post_title):
                 upper_rank += 1
                 post_links = extract_post_links(section)
                 if post_links:
-                    for href, text in post_links:
-                        if url_or_title_matches(post_url, post_title, href, text):
-                            print(f"[{keyword}] 윗탭 {upper_rank}위에서 발견!")
-                            return ("윗탭", upper_rank, "윗탭")
+                    # 첫 번째(메인) 링크만 순위로 인정
+                    # 섹션 카드 안의 서브 링크(작은 관련글)는 무시
+                    href, text = post_links[0]
+                    if url_or_title_matches(post_url, post_title, href, text):
+                        print(f"[{keyword}] 윗탭 {upper_rank}위에서 발견!")
+                        return ("윗탭", upper_rank, "윗탭")
             else:
                 # 아랫탭: 모든 보이는 섹션을 1개 카드=1순위로 카운트
                 lower_rank += 1
                 post_links = extract_post_links(section)
                 if post_links:
-                    for href, text in post_links:
-                        if url_or_title_matches(post_url, post_title, href, text):
-                            print(f"[{keyword}] 아랫탭 {lower_rank}위에서 발견!")
-                            return ("아랫탭", lower_rank, "아랫탭")
+                    href, text = post_links[0]
+                    if url_or_title_matches(post_url, post_title, href, text):
+                        print(f"[{keyword}] 아랫탭 {lower_rank}위에서 발견!")
+                        return ("아랫탭", lower_rank, "아랫탭")
 
         except Exception:
             continue

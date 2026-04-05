@@ -6,6 +6,7 @@ from app.auth.routes import token_required
 from .scraper import run_check
 from datetime import datetime, timezone
 from app.utils import json_response
+from app.spreadsheet.sync import sync_to_spreadsheet
 import traceback
 import io
 import csv
@@ -193,6 +194,20 @@ def check_keyword_ranking(current_user, keyword_id):
             response_message = f'순위 확인 완료. 현재 노출되지 않고 있습니다.'
         else:
             response_message = f'순위 확인 완료. 상태: {status}'
+
+        # 스프레드시트 동기화 (해당 유저의 전체 키워드)
+        try:
+            all_keywords = Keyword.query.filter_by(user_id=current_user.id).all()
+            kw_data = [{
+                'priority': k.priority, 'keyword_text': k.keyword_text,
+                'post_title': k.post_title, 'post_url': k.post_url,
+                'ranking_status': k.ranking_status, 'ranking': k.ranking,
+                'section': k.section, 'prev_ranking': k.prev_ranking,
+                'prev_section': k.prev_section, 'prev_ranking_status': k.prev_ranking_status
+            } for k in all_keywords]
+            sync_to_spreadsheet(kw_data, current_user.email)
+        except Exception as e:
+            print(f"[스프레드시트] 동기화 오류 (무시): {e}")
 
         return json_response({
             'message': response_message,
